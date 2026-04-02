@@ -70,6 +70,7 @@ add_pill <- function(value) {
     "P/LP" = "#FF6666",
     "VUS"  = "#FFFF66",
     "B/LB" = "#B2FF66",
+    "conflicting" = "#C0C0C0",
     "NA"   = "#C0C0C0",
     "#C0C0C0"
   )
@@ -84,6 +85,7 @@ clinvar_colors <- c(
   "P/LP" = "#FF6666",
   "VUS"  = "#FFFF66",
   "B/LB" = "#B2FF66",
+  "conflicting" = "#C0C0C0",
   "NA"   = "#C0C0C0"
 )
 
@@ -93,7 +95,7 @@ hcm_genes <- setdiff(hcm_genes, "MT-TI")
 # ---------------- UI ----------------
 ui <- navbarPage(
   
-  title = "SHaRe Genomic Data Browser V0.2.3",
+  title = "SHaRe Genomic Data Browser V0.2.4",
   id = "navbar",
   theme = shinytheme("flatly"),
   header = tags$head(
@@ -203,8 +205,15 @@ ui <- navbarPage(
                  tags$a(href='https://www.garvan.org.au/', target="_blank",
                         tags$img(src='https://images.contentstack.io/v3/assets/blt324fd0a04af716e6/blt3f0048229394c515/6405de96205f2b7a60b745d6/gimr-logo.png',height='150',width='200' ))
              )
-           ))
+           
+           )),
+        div(
+          style = "text-align:center; margin: 0.5rem 0 1.5rem 0; font-size: 1rem;",
+          span("All rights reserved. Please report any issues to the web administrator "),
+          tags$a(href = "mailto:p.theotokis@imperial.ac.uk", "here")
+        )
         ),
+        
 
 
   tabPanel("Gene View",
@@ -242,6 +251,41 @@ server <- function(input, output, session) {
   modal_action_js <- function(action, variant_id) {
     payload <- jsonlite::toJSON(list(action = action, variant = variant_id), auto_unbox = TRUE)
     sprintf("var payload = %s; payload.nonce = Date.now(); Shiny.setInputValue('modal_action', payload, {priority: 'event'});", payload)
+  }
+
+  add_size_legend <- function(plot_obj) {
+    legend_sizes <- c(
+      #"SHaRe AC 0" = 2,
+      "SHaRe AC 1-5" = 4,
+      "SHaRe AC 6-10" = 6,
+      "SHaRe AC 11-20" = 9,
+      "SHaRe AC 21-50" = 12,
+      "SHaRe AC >50" = 20
+    )
+    legend_labels <- names(legend_sizes)
+    for (i in seq_along(legend_sizes)) {
+      plot_obj <- plot_obj %>%
+        add_trace(
+          x = 0,
+          y = 0,
+          type = "scatter",
+          mode = "markers",
+            # marker = list(symbol = "diamond-tall", size = legend_sizes[[i]], color = "white", width = 1.5, line = "black"),
+          marker = list(
+            symbol = "diamond-tall",
+            color = "rgba(0,0,0,0)",
+            line = list(color = "black", width = 1.5),
+            size = legend_sizes[[legend_labels[[i]]]]
+          ),
+          name = legend_labels[[i]],
+          showlegend = TRUE,
+          hoverinfo = "skip",
+          visible = "legendonly",
+          inherit = FALSE
+        )
+    }
+    plot_obj %>%
+      layout(legend = list(itemsizing = "trace"))
   }
 
   initial_load <- reactiveVal(TRUE)
@@ -719,6 +763,12 @@ server <- function(input, output, session) {
     if (is.null(df)) df <- share[0, ]
 
     df %>%
+      mutate(
+        ClinVar_VarClass = case_when(
+          coalesce(as.logical(Flag_conflicting_SHaRe_ClinVar_VarClass), FALSE) & as.character(ClinVar_VarClass) == "other" ~ "conflicting",
+          TRUE ~ as.character(ClinVar_VarClass)
+        )
+      ) %>%
       filter(VarClass %in% classes) %>%
       arrange(POS)
   }) %>% bindCache(active_gene(), input$select_class)
@@ -838,11 +888,11 @@ server <- function(input, output, session) {
 
     add_direction_markers <- function(plot_obj, meta_df) {
       if (is.null(meta_df) || nrow(meta_df) == 0) {
-        return(plot_obj)
+        return(add_size_legend(plot_obj))
       }
       info <- meta_df[1, , drop = FALSE]
       if (any(is.na(info[c("gene_start_bp", "gene_end_bp")])) || is.na(info$strand[1])) {
-        return(plot_obj)
+        return(add_size_legend(plot_obj))
       }
 
       meta_df <- tibble::tibble(
@@ -854,7 +904,7 @@ server <- function(input, output, session) {
                         "triangle-up")
       )
 
-      plot_obj %>%
+      plot_obj <- plot_obj %>%
         add_trace(
           data = meta_df,
           x = ~POS,
@@ -879,6 +929,8 @@ server <- function(input, output, session) {
           showlegend = FALSE,
           inherit = FALSE
         )
+
+      add_size_legend(plot_obj)
     }
 
     if (nrow(df) == 0) {
@@ -1016,6 +1068,12 @@ server <- function(input, output, session) {
     p <- p %>%
       layout(
         showlegend = TRUE,
+        legend = list(
+          itemsizing = "trace",
+          itemclick = FALSE,
+          itemdoubleclick = FALSE,
+          font = list(color = "black")
+        ),
         dragmode = "zoom",
         xaxis = list(
           title = "Genomic Position",
@@ -1153,7 +1211,21 @@ server <- function(input, output, session) {
                             payload <- jsonlite::toJSON(list(id = value, index = index), auto_unbox = TRUE)
                             as.character(tags$a(href = "#",onclick = sprintf("event.preventDefault(); event.stopPropagation(); Shiny.setInputValue('variant_navigate', %s, {priority: 'event'});", payload),value))
                             }),
-        VEP_Consequence     = colDef(name = "VEP Consequence",cell = status_cell,width = 320),
+        VEP_Consequence     = colDef(
+          name = as.character(tags$span(
+            "VEP Consequence ",
+            tags$a(
+              href = "https://www.ensembl.org/info/genome/variation/prediction/predicted_data.html",
+              target = "_blank",
+              rel = "noopener noreferrer",
+              title = "Open Ensembl consequence prediction guide",
+              icon("circle-info", style = "font-size: 0.9em; vertical-align: middle; color: #2c3e50;")
+            )
+          )),
+          html = TRUE,
+          cell = status_cell,
+          width = 320
+        ),
         AC              = colDef(width = 100),
         SHaRe_VarClass  = colDef(cell = add_pill,name = "VarClass",maxWidth = 150,align = "center" ),
         ClinVar_VarClass= colDef(cell = add_pill,name = "ClinVar VarClass",maxWidth = 150,align = "center")
@@ -1342,6 +1414,7 @@ server <- function(input, output, session) {
       HTML("VarSome")
     }
 
+    #shinycssloaders::withSpinner(
     tagList(
       tags$script(HTML("if (typeof window.shareCopyHandler === 'undefined') {window.shareCopyHandler = true; Shiny.addCustomMessageHandler('copyText', function(txt) {navigator.clipboard.writeText(txt);});}")),
 
@@ -1398,7 +1471,7 @@ server <- function(input, output, session) {
                 "gnomad_info_btn",
                 label = NULL,
                 icon = icon("circle-info"),
-                style = "color: #2c3e50; text-decoration: none; font-size: 1.05rem;"
+                style = "color: #2c3e50; text-decoration: none; font-size: 0.9rem;"
               )
             ),
             reactableOutput("variant_view_gnomad_pop")
@@ -1497,8 +1570,11 @@ server <- function(input, output, session) {
                  )
                )
                )
-      )
+      ),
+      br(), br(),
+      br(), br()
     )
+    #)
   })
 
   build_variant_share_summary_table <- function(row) {
@@ -2075,15 +2151,19 @@ server <- function(input, output, session) {
                  )
           ),
         ),
+        br(), br(),
+        
         fluidRow(
           column(width = 5,offset = 1,
                  div(
                    style = "padding-left: 1rem; margin-top: 1rem;",
-                   h2("SHaRe Gene Classification Summary", style = "margin-bottom: 0.5rem;"),
+                   h2("SHaRe Variant Classification Summary", style = "margin-bottom: 0.5rem;"),
                    reactableOutput("gene_clinvar_summary")
                  )
           )
         ),
+        #br(), br(),
+        
         fluidRow(
           column(width = 10,offset = 1,
                  div(
@@ -2092,6 +2172,8 @@ server <- function(input, output, session) {
                  )
           )
         ),
+        #br(), br(),
+        
         fluidRow(
           column(width = 10,offset = 1,
                  prettyCheckboxGroup(
@@ -2111,11 +2193,15 @@ server <- function(input, output, session) {
                  )
           )
         ),
+        # br(), br(),
+        
         fluidRow(
           column(width = 10,offset = 1,
                  reactableOutput("variant_table")
           )
-        )
+        ),
+        br(), br(),
+        br(), br()
       )
     )
   })
@@ -2178,7 +2264,16 @@ server <- function(input, output, session) {
       tibble(
         field = c(
           "Gene description",
-          "Disease",
+          as.character(tags$span(
+            "Disease ",
+            tags$a(
+              href = "https://imperialcardiogenetics.github.io/G2P-Cardiac-Panel/#hypertrophic-cardiomyopathy-hcm",
+              target = "_blank",
+              rel = "noopener noreferrer",
+              title = "Open G2P HCM panel",
+              icon("circle-info", style = "font-size: 0.9em; color: #2c3e50;")
+            )
+          )),
           "Evidence strength",
           "Inheritance",
           "Allelic requirement",
@@ -2241,6 +2336,7 @@ server <- function(input, output, session) {
         field = colDef(
           name = "",
           align = "right",
+          html = TRUE,
           style = function(value) list(fontWeight = "bold")
         ),
         value = colDef(
