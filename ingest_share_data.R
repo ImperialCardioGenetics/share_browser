@@ -413,11 +413,28 @@ bin_AC <- function(AC) {
   AC <- coalesce(AC, 0)
   cut(
     AC,
-    breaks = c(0, 1, 5, 10, 20, 50, 200),
+    breaks = c(0, 1, 5, 10, 20, 50, Inf),
     labels = c("0", "1-5", "6-10", "11-20", "21-50", ">50"),
     right = TRUE,
     include.lowest = TRUE
   )
+}
+
+prepare_gene_variant_data <- function(df) {
+  df %>%
+    mutate(
+      ClinVar_VarClass = case_when(
+        coalesce(as.logical(Flag_conflicting_SHaRe_ClinVar_VarClass), FALSE) &
+          as.character(ClinVar_VarClass) == "other" ~ "conflicting",
+        TRUE ~ as.character(ClinVar_VarClass)
+      ),
+      VEP_Consequence_display = str_replace_all(
+        str_replace_all(str_remove_all(Consequence, "variant"), "_", " "),
+        "&",
+        " & "
+      )
+    ) %>%
+    arrange(Gene, POS)
 }
 
 normalize_variant_data <- function(df) {
@@ -499,6 +516,7 @@ extract_meta <- function(df) {
 }
 
 share <- normalize_variant_data(share_2026Q1_VEPout)
+share_display <- prepare_gene_variant_data(share)
 gene_info_all <- normalize_gene_data(share_genes)
 gene_info_filtered <- gene_info_all %>%
   filter(MANE_status == "MANE Select")
@@ -509,6 +527,9 @@ multi_tx_exclude <- list(
 )
 
 share_by_gene <- split(share, share$Gene)
+share_display_by_gene <- split(share_display, share_display$Gene)
+share_by_variant <- split(share, share$VariantID)
+variant_gene_lookup <- setNames(share$Gene, share$VariantID)
 
 gene_structures <- lapply(split(gene_info_filtered, gene_info_filtered$gene_name), function(df) {
   list(
@@ -557,6 +578,10 @@ save(
   multi_tx_genes,
   multi_tx_exclude,
   share_by_gene,
+  share_display,
+  share_display_by_gene,
+  share_by_variant,
+  variant_gene_lookup,
   gene_structures,
   gene_regions,
   empty_exons,

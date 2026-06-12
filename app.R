@@ -22,6 +22,10 @@ required_objects <- c(
   "multi_tx_genes",
   "multi_tx_exclude",
   "share_by_gene",
+  "share_display",
+  "share_display_by_gene",
+  "share_by_variant",
+  "variant_gene_lookup",
   "gene_structures",
   "gene_regions",
   "empty_exons",
@@ -95,23 +99,78 @@ hcm_genes <- setdiff(hcm_genes, "MT-TI")
 # ---------------- UI ----------------
 ui <- navbarPage(
   
-  title = "SHaRe Genomic Data Browser V0.2.4",
+  title = "SHaRe Genomic Data Browser V0.2.5",
   id = "navbar",
   theme = shinytheme("flatly"),
-  header = tags$head(
-    tags$script(HTML("
-      Shiny.addCustomMessageHandler('shareSetPath', function(msg) {
-        if (!msg || !msg.path) return;
-        var method = (msg.mode === 'push') ? 'pushState' : 'replaceState';
-        var base = window.location.pathname;
-        if (base.length === 0) base = '/';
-        var path = msg.path;
-        if (path.charAt(0) !== '/') path = '/' + path;
-        window.history[method]({}, '', base + '#' + path);
-      });
-      window.addEventListener('popstate', function() { window.location.reload(); });
-      window.addEventListener('hashchange', function() { window.location.reload(); });
-    "))
+  header = tagList(
+    tags$head(
+      tags$style(HTML("
+        .share-github-link {
+          position: fixed;
+          top: 8px;
+          right: 18px;
+          z-index: 3000;
+          color: #ffffff;
+          font-size: 2.1rem;
+          line-height: 44px;
+          width: 90px;
+          height: 90px;
+          text-align: center;
+          text-decoration: none;
+        }
+        .share-github-link:hover,
+        .share-github-link:focus {
+          color: #dce4ec;
+          text-decoration: none;
+          outline: none;
+        }
+        @media (max-width: 800px) {
+          .share-github-link {
+            right: 58px;
+          }
+        }
+      ")),
+      tags$script(HTML("
+      (function() {
+        var lastNotifiedPath = null;
+
+        function currentSharePath() {
+          return window.location.hash || window.location.pathname || '';
+        }
+
+        function notifySharePath() {
+          if (!window.Shiny) return;
+          var path = currentSharePath();
+          if (path === lastNotifiedPath) return;
+          lastNotifiedPath = path;
+          Shiny.setInputValue('deep_link_path', {path: path, nonce: Date.now()}, {priority: 'event'});
+        }
+
+        Shiny.addCustomMessageHandler('shareSetPath', function(msg) {
+          if (!msg || !msg.path) return;
+          var method = (msg.mode === 'push') ? 'pushState' : 'replaceState';
+          var base = window.location.pathname;
+          if (base.length === 0) base = '/';
+          var path = msg.path;
+          if (path.charAt(0) !== '/') path = '/' + path;
+          window.history[method]({}, '', base + '#' + path);
+          lastNotifiedPath = currentSharePath();
+        });
+        window.addEventListener('popstate', notifySharePath);
+        window.addEventListener('hashchange', notifySharePath);
+      })();
+      "))
+    ),
+    tags$a(
+      id = "share-github-link",
+      class = "share-github-link",
+      href = "https://github.com/ImperialCardioGenetics/share_browser",
+      target = "_blank",
+      rel = "noopener noreferrer",
+      title = "Open GitHub repository",
+      `aria-label` = "Open GitHub repository",
+      icon("github")
+    )
   ),
   tabPanel("Home",
         fluidPage(
@@ -289,6 +348,7 @@ server <- function(input, output, session) {
   }
 
   initial_load <- reactiveVal(TRUE)
+  suppress_url_update <- reactiveVal(FALSE)
 
   selected_row <- reactive({
     getReactableState("variant_table", "selected")
@@ -319,17 +379,31 @@ server <- function(input, output, session) {
   invalid_variant_request <- reactiveVal(NULL)
   invalid_gene_request <- reactiveVal(NULL)
 
+  get_variant_row <- function(variant_id) {
+    if (is.null(variant_id) || !nzchar(variant_id)) return(share[0, ])
+    if (!(variant_id %in% names(share_by_variant))) return(share[0, ])
+    row <- share_by_variant[[variant_id]]
+    if (is.null(row)) share[0, ] else row
+  }
+
+  get_variant_gene <- function(variant_id) {
+    if (is.null(variant_id) || !nzchar(variant_id)) return(NULL)
+    if (!(variant_id %in% names(variant_gene_lookup))) return(NULL)
+    gene <- unname(variant_gene_lookup[variant_id])
+    if (is.null(gene) || is.na(gene) || !nzchar(gene)) NULL else gene
+  }
+
   select_variant <- function(variant_id, navigate = TRUE) {
     if (is.null(variant_id) || !nzchar(variant_id)) {
       pending_variant(NULL)
       return(FALSE)
     }
-    row <- share %>% filter(VariantID == variant_id)
+    row <- get_variant_row(variant_id)
     if (nrow(row) == 0) {
       pending_variant(NULL)
       return(FALSE)
     }
-    target_gene <- row$Gene[1]
+    target_gene <- get_variant_gene(variant_id)
     if (is.null(target_gene) || !nzchar(target_gene) || !(target_gene %in% hcm_genes)) return(FALSE)
 
     if (!identical(input$gene, target_gene)) {
@@ -353,9 +427,10 @@ server <- function(input, output, session) {
 
   open_gene_view <- function(variant_id) {
     if (is.null(variant_id) || !nzchar(variant_id)) return(FALSE)
-    row <- share %>% filter(VariantID == variant_id)
+    row <- get_variant_row(variant_id)
     if (nrow(row) == 0) return(FALSE)
-    target_gene <- row$Gene[1]
+    target_gene <- get_variant_gene(variant_id)
+    if (is.null(target_gene) || !nzchar(target_gene)) return(FALSE)
 
     if (!identical(input$gene, target_gene)) {
       pending_variant(variant_id)
@@ -373,7 +448,7 @@ server <- function(input, output, session) {
   selected_variant <- reactive({
     variant_id <- sel_var()
     if (is.null(variant_id) || !nzchar(variant_id)) return(NULL)
-    row <- share %>% filter(VariantID == variant_id)
+    row <- get_variant_row(variant_id)
     if (nrow(row) == 0) return(NULL)
     row
   }) %>% bindCache(sel_var())
@@ -440,7 +515,7 @@ server <- function(input, output, session) {
     invalid_gene <- FALSE
 
     if (!is.null(state_variant) && nzchar(state_variant)) {
-      variant_row <- share %>% filter(VariantID == state_variant)
+      variant_row <- get_variant_row(state_variant)
       if (nrow(variant_row) == 0) {
         invalid_variant_request(list(
           variant = state_variant,
@@ -450,7 +525,7 @@ server <- function(input, output, session) {
         state_gene <- NULL
         state_variant <- NULL
       } else {
-        state_gene <- variant_row$Gene[1]
+        state_gene <- get_variant_gene(state_variant)
       }
     }
 
@@ -546,6 +621,7 @@ server <- function(input, output, session) {
 
   update_url_path <- function(mode = "replace") {
     if (isTRUE(initial_load())) return(invisible(NULL))
+    if (isTRUE(suppress_url_update())) return(invisible(NULL))
 
     current_tab <- input$navbar
     if (is.null(current_tab) || !nzchar(current_tab)) current_tab <- "Home"
@@ -595,12 +671,16 @@ server <- function(input, output, session) {
   observeEvent(pending_variant(), {
     variant_id <- pending_variant()
     if (is.null(variant_id) || !nzchar(variant_id)) return()
-    row <- share %>% filter(VariantID == variant_id)
+    row <- get_variant_row(variant_id)
     if (nrow(row) == 0) {
       pending_variant(NULL)
       return()
     }
-    target_gene <- row$Gene[1]
+    target_gene <- get_variant_gene(variant_id)
+    if (is.null(target_gene) || !nzchar(target_gene)) {
+      pending_variant(NULL)
+      return()
+    }
     if (!identical(input$gene, target_gene)) return()
 
     current_sel <- isolate(sel_var())
@@ -737,6 +817,36 @@ server <- function(input, output, session) {
     initial_load(FALSE)
   }, once = TRUE)
 
+  observeEvent(input$deep_link_path, {
+    if (isTRUE(initial_load())) return()
+
+    msg <- input$deep_link_path
+    path <- if (is.list(msg)) msg$path else msg
+    path <- path %||% ""
+    loc <- parse_initial_location(path)
+
+    suppress_url_update(TRUE)
+
+    if (is.null(loc$tab)) {
+      pending_tab(NULL)
+      pending_variant(NULL)
+      initial_url_gene(NULL)
+      invalid_variant_request(NULL)
+      invalid_gene_request(NULL)
+      gene_selected(NULL)
+      sel_var(NULL)
+      gene_loading(FALSE)
+      updateSelectizeInput(session, "gene", selected = "")
+      updateTabsetPanel(session, inputId = "navbar", selected = "Home")
+    } else {
+      apply_initial_state(tab = loc$tab, gene = loc$gene, variant = loc$variant)
+    }
+
+    session$onFlushed(function() {
+      suppress_url_update(FALSE)
+    }, once = TRUE)
+  }, ignoreNULL = TRUE)
+
   
   observe({
     idx <- selected_row()
@@ -759,18 +869,11 @@ server <- function(input, output, session) {
     req(has_active_gene())
     classes <- input$select_class
     if (is.null(classes) || length(classes) == 0) classes <- genomic_classifications
-    df <- share_by_gene[[active_gene()]]
-    if (is.null(df)) df <- share[0, ]
+    df <- share_display_by_gene[[active_gene()]]
+    if (is.null(df)) df <- share_display[0, ]
 
     df %>%
-      mutate(
-        ClinVar_VarClass = case_when(
-          coalesce(as.logical(Flag_conflicting_SHaRe_ClinVar_VarClass), FALSE) & as.character(ClinVar_VarClass) == "other" ~ "conflicting",
-          TRUE ~ as.character(ClinVar_VarClass)
-        )
-      ) %>%
-      filter(VarClass %in% classes) %>%
-      arrange(POS)
+      filter(VarClass %in% classes)
   }) %>% bindCache(active_gene(), input$select_class)
 
   build_multi_tx_gene_tracks <- function(plot_obj, tx_source, tx_ids, tx_y, pfam_colors = NULL, legend_seen = character(0)) {
@@ -1192,11 +1295,10 @@ server <- function(input, output, session) {
       select("VariantID",
              "HGVS Coding Consequence" = cdot,
              "HGVS Protein Consequence" = pdot,
-             "VEP_Consequence" = Consequence,
+             "VEP_Consequence" = VEP_Consequence_display,
              "SHaRe AC" = AC,
              "SHaRe_VarClass" = VarClass ,
              "ClinVar_VarClass") %>% 
-      mutate(VEP_Consequence = str_replace_all(str_replace_all(str_remove_all(VEP_Consequence,"variant"),"_", " "),"&", " & ")) %>% 
     reactable(
       selection = "single",
       highlight = TRUE,
@@ -1596,6 +1698,31 @@ server <- function(input, output, session) {
       )
   }
 
+  fmt_gnomad_frequency <- function(x) {
+    vapply(x, function(value) {
+      if (length(value) == 0 || is.na(value) || !nzchar(as.character(value))) return("-")
+      value <- suppressWarnings(as.numeric(value))
+      if (is.na(value)) return("-")
+      if (value == 0) return("0.0000")
+
+      s <- format(value, scientific = FALSE, trim = TRUE, digits = 22)
+      if (!str_detect(s, fixed("."))) {
+        return(s)
+      }
+
+      parts <- str_split_fixed(s, fixed("."), 2)
+      decimals <- str_replace(parts[, 2], "0+$", "")
+      leading_zeros <- str_extract(decimals, "^0*")
+      significant_decimals <- str_sub(decimals, nchar(leading_zeros) + 1L)
+
+      if (!nzchar(significant_decimals)) {
+        return(paste0(parts[, 1], ".", str_dup("0", 4)))
+      }
+
+      paste0(parts[, 1], ".", leading_zeros, str_sub(significant_decimals, 1L, 4L))
+    }, character(1), USE.NAMES = FALSE)
+  }
+
   build_variant_gnomad_summary_table <- function(row) {
     fmt_dash_num <- function(x) {
       if (is.na(x) || length(x) == 0 || !nzchar(as.character(x))) "-" else format(x, scientific = FALSE)
@@ -1621,6 +1748,10 @@ server <- function(input, output, session) {
           fmt_dash_chr(.x)
         }
       })) %>%
+      mutate(
+        `Allele Frequency` = fmt_gnomad_frequency(`Allele Frequency`),
+        `Filtering AF (95% confidence) GroupMax` = fmt_gnomad_frequency(`Filtering AF (95% confidence) GroupMax`)
+      ) %>%
       mutate(`Filtering AF (95% confidence) GroupMax Ancestry` = if_else(
         `Filtering AF (95% confidence) GroupMax Ancestry` == "-",
         "-",
@@ -1663,10 +1794,9 @@ server <- function(input, output, session) {
     req(!is.null(row), nrow(row) > 0)
     row %>%
       select("VarClass Status" = VarClass_status,
-             "Calssification Notes" = Notes,
              "ACMG Rules" = ACMG,
              "ACMG Score" = Score,
-             "VUS Subclass" = VUS_Class,
+             "Classification with VUS subclass" = VUS_Class,
              "MYBPC3 SpliceStatus" = MYBPC3_SpliceStatus) %>% 
       mutate(across(everything(), ~ {
         x <- as.character(.x)
@@ -1710,15 +1840,17 @@ server <- function(input, output, session) {
     
     
     clean_decimals <- function(x) {
-      # Convert to character without scientific notation
-      s <- format(x, scientific = FALSE, trim = TRUE)
-      # Extract decimal part
-      dec <- sub("^[^.]*\\.?","", s)
-      # Detect decimals that are 8+ zeros
-      needs_trim <- grepl("^0{8,}$", dec)
-      # Apply trimming only to those cases
-      out <- ifelse(needs_trim,format(round(x, 3), nsmall = 3, scientific = FALSE),s)
-      out
+      fmt_gnomad_frequency(x)
+    }
+
+    fmt_count <- function(x) {
+      vapply(x, function(value) {
+        if (is.na(value) || length(value) == 0 || !nzchar(as.character(value))) {
+          "-"
+        } else {
+          format(value, scientific = FALSE, trim = TRUE)
+        }
+      }, character(1), USE.NAMES = FALSE)
     }
     
     
@@ -1731,12 +1863,16 @@ server <- function(input, output, session) {
       if (is.na(nm) || !nzchar(nm)) NA else row[[nm]][1]
     }
 
-    fmt_total_val <- function(x) {
+    fmt_total_count <- function(x) {
       if (is.na(x) || length(x) == 0 || !nzchar(as.character(x))) {
         "-"
       } else {
-        clean_decimals(x)
+        fmt_count(x)
       }
+    }
+
+    fmt_total_freq <- function(x) {
+      clean_decimals(x)
     }
 
     pop_rows <- purrr::pmap_dfr(pop_map, function(pop, label) {
@@ -1750,7 +1886,13 @@ server <- function(input, output, session) {
       )
     }) %>%
       mutate(across(where(is.numeric), ~ replace_na(.x, 0))) %>% 
-      mutate(across(where(is.numeric), clean_decimals)) %>% 
+      mutate(
+        `Allele Count` = fmt_count(`Allele Count`),
+        `Allele Number` = fmt_count(`Allele Number`),
+        `Number of Homozygotes` = fmt_count(`Number of Homozygotes`),
+        `Allele Frequency` = clean_decimals(`Allele Frequency`),
+        `Filtering AF (95% confidence)` = clean_decimals(`Filtering AF (95% confidence)`)
+      ) %>%
       mutate(across(-Population, as.character)) %>% 
       mutate(.sex_block = Population %in% c("XX", "XY")) %>%
       arrange(.sex_block, desc(`Filtering AF (95% confidence)`)) %>%
@@ -1758,11 +1900,11 @@ server <- function(input, output, session) {
 
     total_row <- tibble(
       Population = "Total",
-      "Allele Count" = fmt_total_val(row$gnomAD4_AC_joint[1]),
-      "Allele Number" = fmt_total_val(row$gnomAD4_AN_joint[1]),
+      "Allele Count" = fmt_total_count(row$gnomAD4_AC_joint[1]),
+      "Allele Number" = fmt_total_count(row$gnomAD4_AN_joint[1]),
       "Number of Homozygotes" = "-",
-      "Allele Frequency" = fmt_total_val(row$gnomAD4_AF_joint[1]),
-      "Filtering AF (95% confidence)" = fmt_total_val(row$gnomAD4_fafmax_faf95_max_joint[1])
+      "Allele Frequency" = fmt_total_freq(row$gnomAD4_AF_joint[1]),
+      "Filtering AF (95% confidence)" = fmt_total_freq(row$gnomAD4_fafmax_faf95_max_joint[1])
     )
 
     bind_rows(pop_rows, total_row)
@@ -1789,8 +1931,8 @@ server <- function(input, output, session) {
       Value = c(
         fmt_joint_num(row$gnomAD4_AC_joint[1]),
         fmt_joint_num(row$gnomAD4_AN_joint[1]),
-        fmt_joint_num(row$gnomAD4_AF_joint[1]),
-        fmt_joint_num(row$gnomAD4_fafmax_faf95_max_joint[1]),
+        fmt_gnomad_frequency(row$gnomAD4_AF_joint[1]),
+        fmt_gnomad_frequency(row$gnomAD4_fafmax_faf95_max_joint[1]),
         {
           anc <- fmt_joint_chr(row$gnomAD4_fafmax_faf95_max_gen_anc_joint[1])
           if (identical(anc, "-")) "-" else toupper(anc)
@@ -1843,13 +1985,13 @@ server <- function(input, output, session) {
         Group = c("Case", "Control"),
         Alt = c(case_alt, ctrl_alt),
         Ref = c(case_ref, ctrl_ref),
-        AF = c(case_af, ctrl_af)
+        AF = fmt_gnomad_frequency(c(case_af, ctrl_af))
       ),
       summary = sprintf(
-        "Fisher exact OR = %s (95%% CI %s to %s)",
-        format(or_est, scientific = FALSE, trim = TRUE),
-        format(ci_low, scientific = FALSE, trim = TRUE),
-        format(ci_high, scientific = FALSE, trim = TRUE)
+        "Fisher exact OR = %.2f (95%% CI %.2f to %.2f)",
+        or_est,
+        ci_low,
+        ci_high
       ),
       or = or_est,
       ci_low = ci_low,
