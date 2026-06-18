@@ -93,13 +93,13 @@ clinvar_colors <- c(
   "NA"   = "#C0C0C0"
 )
 
-# remove empty gene
-hcm_genes <- setdiff(hcm_genes, "MT-TI")
+# Remove genes that should not be available in the app selector.
+hcm_genes <- setdiff(hcm_genes, c("MT-TI", "RIT1"))
 
 # ---------------- UI ----------------
 ui <- navbarPage(
   
-  title = "SHaRe Genomic Data Browser V0.2.5",
+  title = "SHaRe Genomic Data Browser V0.2.6",
   id = "navbar",
   theme = shinytheme("flatly"),
   header = tagList(
@@ -272,8 +272,8 @@ ui <- navbarPage(
           tags$a(href = "mailto:p.theotokis@imperial.ac.uk", "here")
         )
         ),
-        
 
+  
 
   tabPanel("Gene View",
            fluidPage(
@@ -284,6 +284,16 @@ ui <- navbarPage(
            fluidPage(
              shinycssloaders::withSpinner(uiOutput("variant_view_ui"), type = 4, color = "#2c3e50")
            )
+  ),
+  tabPanel(
+    "About",
+    fluidPage(
+      div(
+        class = "container-fluid",
+        style = "max-width: 1100px; padding-top: 2rem; padding-bottom: 3rem;",
+        includeMarkdown(file.path(app_dir, "README.md"))
+      )
+    )
   )
 )
 
