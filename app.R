@@ -258,7 +258,7 @@ ui <- navbarPage(
                  tags$a(href='https://www.imperial.ac.uk/', target="_blank",
                         tags$img(src='https://upload.wikimedia.org/wikipedia/commons/thumb/0/06/Imperial_College_London_new_logo.png/500px-Imperial_College_London_new_logo.png',height='50',width='100' )),
                  tags$a(href='https://www.theshareregistry.org/', target="_blank",
-                        tags$img(src='https://www.theshareregistry.org/wp-content/uploads/2024/05/SHARE_Main_Logo_215px.png',height='300',width='300' )),
+                        tags$img(src='SHARE_Main_Logo_215px.png',height='300',width='300' )),
                  tags$a(href='https://lms.mrc.ac.uk/', target="_blank",
                         tags$img(src='https://lms.mrc.ac.uk/wp-content/uploads/logo.svg',height='150',width='400' )),
                  tags$a(href='https://www.garvan.org.au/', target="_blank",
